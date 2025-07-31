@@ -250,204 +250,46 @@ class InteractiveLLMBenchmark:
             else:
                 print("Please enter 'y' or 'n'")
     
-    def download_and_load_model(self, model: ModelConfig) -> Tuple[Optional[object], Optional[object], Dict]:
-        """Download and load model with live progress updates"""
-        print(f"\n📥 Processing {model.name}...")
+    def download_and_load_model_single_option(self, model: ModelConfig, option: Dict) -> Tuple[Optional[object], Optional[object], Dict]:
+        """Load model with a specific quantization option"""
+        print(f"  🔄 Loading with {option['quantization']}...")
+        print(f"     Expected RAM usage: {option['required_ram']:.1f}GB")
         
-        # Find best quantization option for this system
-        compatibility = self.check_basic_compatibility(model)
-        if not compatibility["options"]:
-            return None, None, {"error": "Model incompatible with system"}
-        
-        # Try quantization options in order of efficiency
-        for quant_option in self.quantization_options:
-            # Check if this quantization is compatible
-            compatible_option = next(
-                (opt for opt in compatibility["options"] if opt["quantization"] == quant_option.name), 
-                None
-            )
+        try:
+            # Monitor system during loading
+            monitor_thread = threading.Thread(target=self._monitor_system_safely, daemon=True)
+            monitor_thread.start()
             
-            if not compatible_option:
-                continue
-                
-            try:
-                print(f"  🔄 Attempting {quant_option.name} quantization...")
-                print(f"     Expected RAM usage: {compatible_option['required_ram']:.1f}GB")
-                
-                # Show live system stats during download
-                monitor_thread = threading.Thread(target=self._monitor_system_during_load, daemon=True)
-                monitor_thread.start()
-                
-                # Load tokenizer first (smaller download)
-                print("     📚 Loading tokenizer...")
-                tokenizer = AutoTokenizer.from_pretrained(model.model_id, trust_remote_code=True)
-                if tokenizer.pad_token is None:
-                    tokenizer.pad_token = tokenizer.eos_token
-                
-                # Load main model
-                print("     🧠 Loading model (this may take several minutes)...")
-                start_time = time.time()
-                
-                model_obj = AutoModelForCausalLM.from_pretrained(
-                    model.model_id,
-                    quantization_config=quant_option.config,
-                    device_map="auto",
-                    torch_dtype=torch.float16 if quant_option.config is None else None,
-                    trust_remote_code=True
-                )
-                
-                load_time = time.time() - start_time
-                print(f"     ✅ Model loaded successfully in {load_time:.1f}s with {quant_option.name} quantization")
-                
-                return model_obj, tokenizer, {
-                    "quantization": quant_option.name,
-                    "load_time": load_time,
-                    "error": None
-                }
-                
-            except Exception as e:
-                print(f"     ❌ Failed with {quant_option.name}: {str(e)[:100]}...")
-                continue
-        
-        return None, None, {"error": "Failed to load with any quantization option"}
-    def download_and_load_model(self, model: ModelConfig) -> Tuple[Optional[object], Optional[object], Dict]:
-        """Download and load model with comprehensive error handling for all systems"""
-        print(f"\n📥 Processing {model.name}...")
-        
-        # Find best quantization option for this system
-        compatibility = self.check_basic_compatibility(model)
-        if not compatibility["options"]:
-            return None, None, {"error": "Model incompatible with system"}
-        
-        # Detect system capabilities
-        has_cuda = torch.cuda.is_available()
-        has_mps = hasattr(torch.backends, 'mps') and torch.backends.mps.is_available()  # Apple Silicon
-        
-        print(f"  🖥️  System: {'CUDA GPU' if has_cuda else 'MPS (Apple)' if has_mps else 'CPU-only'}")
-        
-        # Try quantization options in order of efficiency
-        for quant_option in self.quantization_options:
-            # Check if this quantization is compatible
-            compatible_option = next(
-                (opt for opt in compatibility["options"] if opt["quantization"] == quant_option.name), 
-                None
-            )
+            # Load tokenizer
+            tokenizer = self._load_tokenizer_safely(model.model_id)
+            if tokenizer is None:
+                return None, None, {"error": "Tokenizer loading failed"}
             
-            if not compatible_option:
-                continue
+            # Load model with this specific option
+            start_time = time.time()
+            model_obj = self._load_model_with_strategy(model.model_id, option, self.hardware_info)
             
-            # Skip quantization on CPU-only systems if it's problematic
-            if not has_cuda and not has_mps and quant_option.name in ["4-bit", "8-bit"]:
-                try:
-                    # Test if bitsandbytes works on this system
-                    import bitsandbytes as bnb
-                    # Some systems don't support bitsandbytes without CUDA
-                except ImportError:
-                    print(f"  ⚠️  Skipping {quant_option.name} - bitsandbytes not available on CPU-only system")
-                    continue
-                
-            try:
-                print(f"  🔄 Attempting {quant_option.name} quantization...")
-                print(f"     Expected RAM usage: {compatible_option['required_ram']:.1f}GB")
-                
-                # Show live system stats during download (non-blocking)
-                try:
-                    monitor_thread = threading.Thread(target=self._monitor_system_during_load, daemon=True)
-                    monitor_thread.start()
-                except Exception:
-                    pass  # Continue without monitoring if threading fails
-                
-                # Load tokenizer first (smaller download)
-                print("     📚 Loading tokenizer...")
-                try:
-                    tokenizer = AutoTokenizer.from_pretrained(
-                        model.model_id, 
-                        trust_remote_code=True,
-                        use_auth_token=True  # Use saved auth token
-                    )
-                    if tokenizer.pad_token is None:
-                        tokenizer.pad_token = tokenizer.eos_token
-                except Exception as e:
-                    print(f"     ❌ Tokenizer failed: {str(e)[:100]}...")
-                    continue
-                
-                # Determine device strategy
-                device_map = self._get_device_map(has_cuda, has_mps, quant_option)
-                torch_dtype = self._get_torch_dtype(has_cuda, has_mps, quant_option)
-                
-                # Load main model
-                print("     🧠 Loading model (this may take several minutes)...")
-                start_time = time.time()
-                
-                try:
-                    model_obj = AutoModelForCausalLM.from_pretrained(
-                        model.model_id,
-                        quantization_config=quant_option.config,
-                        device_map=device_map,
-                        torch_dtype=torch_dtype,
-                        trust_remote_code=True,
-                        use_auth_token=True,  # Use saved auth token
-                        low_cpu_mem_usage=True,  # Reduce CPU memory usage during loading
-                        offload_folder="./offload" if not has_cuda and not has_mps else None,  # CPU offloading
-                    )
-                except Exception as model_error:
-                    print(f"     ❌ Model loading failed: {str(model_error)[:150]}...")
-                    
-                    # Try fallback: CPU-only without quantization
-                    if quant_option.config is not None:
-                        print(f"     🔄 Trying CPU fallback without quantization...")
-                        try:
-                            model_obj = AutoModelForCausalLM.from_pretrained(
-                                model.model_id,
-                                device_map="cpu",
-                                torch_dtype=torch.float32,  # Use float32 for CPU
-                                trust_remote_code=True,
-                                use_auth_token=True,
-                                low_cpu_mem_usage=True,
-                            )
-                            quant_option.name = "CPU-float32"  # Update for reporting
-                        except Exception as fallback_error:
-                            print(f"     ❌ CPU fallback also failed: {str(fallback_error)[:100]}...")
-                            continue
-                    else:
-                        continue
-                
-                load_time = time.time() - start_time
-                
-                # Verify model is actually loaded and functional
-                try:
-                    # Quick test to ensure model works
-                    test_input = tokenizer("Test", return_tensors="pt")
-                    if str(model_obj.device) != "cpu":
-                        test_input = {k: v.to(model_obj.device) for k, v in test_input.items()}
-                    
-                    with torch.no_grad():
-                        _ = model_obj(**test_input)
-                    
-                    print(f"     ✅ Model loaded successfully in {load_time:.1f}s with {quant_option.name} quantization")
-                    print(f"     📍 Device: {model_obj.device}")
-                    
-                    return model_obj, tokenizer, {
-                        "quantization": quant_option.name,
-                        "load_time": load_time,
-                        "device": str(model_obj.device),
-                        "error": None
-                    }
-                    
-                except Exception as test_error:
-                    print(f"     ❌ Model loaded but failed functionality test: {str(test_error)[:100]}...")
-                    # Clean up failed model
-                    del model_obj
-                    gc.collect()
-                    if has_cuda:
-                        torch.cuda.empty_cache()
-                    continue
-                    
-            except Exception as e:
-                print(f"     ❌ Failed with {quant_option.name}: {str(e)[:100]}...")
-                continue
-        
-        return None, None, {"error": "Failed to load with any quantization option"}
+            if model_obj is None:
+                return None, None, {"error": f"Model loading failed with {option['quantization']}"}
+            
+            load_time = time.time() - start_time
+            
+            if not self._verify_model_functionality(model_obj, tokenizer):
+                self._cleanup_failed_model(model_obj)
+                return None, None, {"error": "Model failed functionality test"}
+            
+            print(f"     ✅ Success! Loaded in {load_time:.1f}s")
+            
+            return model_obj, tokenizer, {
+                "quantization": option["quantization"],
+                "load_time": load_time,
+                "device": str(self._get_model_device(model_obj)),
+                "error": None
+            }
+            
+        except Exception as e:
+            print(f"     ❌ Failed: {str(e)[:100]}...")
+            return None, None, {"error": str(e)}
 
     def _get_device_map(self, has_cuda: bool, has_mps: bool, quant_option) -> str:
         """Determine optimal device mapping strategy"""
@@ -501,15 +343,6 @@ class InteractiveLLMBenchmark:
             # Clear the monitoring line
             print(f"\r{' ' * 80}\r", end='', flush=True)
 
-
-    # def _monitor_system_during_load(self):
-    #     """Monitor system resources during model loading"""
-    #     for _ in range(60):  # Monitor for up to 60 seconds
-    #         memory = psutil.virtual_memory()
-    #         cpu_percent = psutil.cpu_percent(interval=1)
-            
-    #         print(f"     📊 RAM: {memory.percent:.1f}% used | CPU: {cpu_percent:.1f}%", end='\r')
-    #         time.sleep(2)
     
     def advanced_benchmark(self, model, tokenizer, model_name: str, model_info: Dict) -> Dict:
         """Run comprehensive benchmarking with multiple metrics"""
