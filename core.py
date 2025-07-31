@@ -139,6 +139,59 @@ class InteractiveLLMBenchmark:
         
         self.system_info = info
         return info
+
+    def cleanup_model(self, model, tokenizer):
+        """Clean up memory after each model"""
+        del model
+        del tokenizer
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        print("  🧹 Memory cleaned up")
+    
+    def analyze_and_recommend(self):
+        """Analyze results and provide recommendations"""
+        if not self.results:
+            print("❌ No successful benchmarks to analyze")
+            return
+        
+        successful_results = [r for r in self.results if r.get("status") == "success"]
+        
+        if not successful_results:
+            print("❌ No successful benchmarks completed")
+            return
+        
+        print("\n" + "=" * 60)
+        print("📊 BENCHMARK RESULTS & ANALYSIS")
+        print("=" * 60)
+        
+        # Display detailed results
+        for result in successful_results:
+            print(f"\n🎯 {result['model_name']} ({result['quantization']} quantization)")
+            print(f"   Load Time: {result['load_time']:.1f}s")
+            print(f"   Memory Usage: {result['ram_used_gb']:.1f}GB RAM + {result['gpu_memory_gb']:.1f}GB GPU")
+            print("   Performance:")
+            
+            for prompt_type in ['short', 'medium', 'long']:
+                if f"{prompt_type}_tpm" in result:
+                    tpm = result[f"{prompt_type}_tpm"]
+                    first_token = result[f"{prompt_type}_first_token_latency"] * 1000
+                    total_latency = result[f"{prompt_type}_total_latency"]
+                    print(f"     {prompt_type.capitalize():<8}: {tpm:6.1f} TPM | {first_token:4.0f}ms first token | {total_latency:.2f}s total")
+        
+        # Find best model
+        best_model = max(successful_results, key=lambda x: x.get('medium_tpm', 0))
+        
+        print(f"\n🏆 RECOMMENDATION")
+        print("-" * 30)
+        print(f"Best Overall: {best_model['model_name']} ({best_model['quantization']})")
+        print(f"Reasons:")
+        print(f"  • Highest medium prompt performance: {best_model['medium_tpm']:.1f} TPM")
+        print(f"  • Memory efficient: {best_model['ram_used_gb']:.1f}GB RAM usage")
+        print(f"  • Fast loading: {best_model['load_time']:.1f}s startup time")
+        
+        # Save detailed results
+        self.save_detailed_results()
     
     def download_and_load_model(self, model: ModelConfig) -> Tuple[Optional[object], Optional[object], Dict]:
         """Download and load model with comprehensive error handling for all systems"""
@@ -278,3 +331,4 @@ class InteractiveLLMBenchmark:
                 continue
         
         return None, None, {"error": "Failed to load with any quantization option"}
+        
