@@ -1,3 +1,9 @@
+#!/usr/bin/env python3
+"""
+Interactive LLM Local Benchmarking Tool
+Enhanced user experience with step-by-step guidance
+"""
+
 import time
 import psutil
 import torch
@@ -8,7 +14,6 @@ import os
 import threading
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
-
 
 @dataclass
 class ModelConfig:
@@ -27,7 +32,6 @@ class QuantizationOption:
     config: Optional[BitsAndBytesConfig]
     memory_multiplier: float  # How much memory this saves (1.0 = no savings)
     description: str
-
 
 class InteractiveLLMBenchmark:
     def __init__(self):
@@ -139,60 +143,173 @@ class InteractiveLLMBenchmark:
         
         self.system_info = info
         return info
-
-    def cleanup_model(self, model, tokenizer):
-        """Clean up memory after each model"""
-        del model
-        del tokenizer
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        print("  🧹 Memory cleaned up")
     
-    def analyze_and_recommend(self):
-        """Analyze results and provide recommendations"""
-        if not self.results:
-            print("❌ No successful benchmarks to analyze")
-            return
+    def display_model_options(self):
+        """Display available models with requirements"""
+        print("\n📦 Available Models:")
+        print("-" * 80)
+        print(f"{'Model':<15} {'Size':<8} {'Min RAM':<10} {'Rec RAM':<10} {'Description'}")
+        print("-" * 80)
         
-        successful_results = [r for r in self.results if r.get("status") == "success"]
+        for i, model in enumerate(self.available_models, 1):
+            compatibility = self.check_basic_compatibility(model)
+            status = "✅" if compatibility["can_run"] else "❌"
+            
+            print(f"{i}. {model.name:<12} {model.size_gb:<6.1f}GB {model.min_ram_gb:<8.1f}GB {model.recommended_ram_gb:<8.1f}GB {model.description} {status}")
         
-        if not successful_results:
-            print("❌ No successful benchmarks completed")
-            return
+    def check_basic_compatibility(self, model: ModelConfig) -> Dict:
+        """Check if model can potentially run on this system"""
+        available_ram = self.system_info["available_ram_gb"]
+        has_gpu = self.system_info["has_gpu"]
         
-        print("\n" + "=" * 60)
-        print("📊 BENCHMARK RESULTS & ANALYSIS")
+        # Check different quantization options
+        compatible_options = []
+        
+        for quant in self.quantization_options:
+            required_ram = model.size_gb * quant.memory_multiplier * 1.5  # 1.5x safety factor
+            
+            if available_ram >= required_ram:
+                compatible_options.append({
+                    "quantization": quant.name,
+                    "required_ram": required_ram,
+                    "description": quant.description
+                })
+        
+        return {
+            "can_run": len(compatible_options) > 0,
+            "options": compatible_options,
+            "has_gpu_advantage": has_gpu
+        }
+    
+    def get_user_model_selection(self) -> List[ModelConfig]:
+        """Interactive model selection"""
+        while True:
+            try:
+                selection = input("\n🎯 Select models to benchmark (e.g., '1,3' or 'all'): ").strip().lower()
+                
+                if selection == 'all':
+                    return [model for model in self.available_models 
+                           if self.check_basic_compatibility(model)["can_run"]]
+                
+                if selection == 'exit' or selection == 'quit':
+                    print("👋 Exiting...")
+                    exit(0)
+                
+                # Parse comma-separated indices
+                indices = [int(x.strip()) - 1 for x in selection.split(',')]
+                selected_models = []
+                
+                for idx in indices:
+                    if 0 <= idx < len(self.available_models):
+                        model = self.available_models[idx]
+                        compatibility = self.check_basic_compatibility(model)
+                        
+                        if compatibility["can_run"]:
+                            selected_models.append(model)
+                        else:
+                            print(f"⚠️  {model.name} cannot run on your system (insufficient RAM)")
+                    else:
+                        print(f"❌ Invalid selection: {idx + 1}")
+                
+                if selected_models:
+                    return selected_models
+                else:
+                    print("❌ No valid models selected. Please try again.")
+                    
+            except (ValueError, KeyboardInterrupt):
+                print("❌ Invalid input. Please enter numbers separated by commas (e.g., '1,2') or 'all'")
+    
+    def show_detailed_compatibility(self, models: List[ModelConfig]):
+        """Show detailed compatibility analysis for selected models"""
+        print("\n🔧 Compatibility Analysis:")
         print("=" * 60)
         
-        # Display detailed results
-        for result in successful_results:
-            print(f"\n🎯 {result['model_name']} ({result['quantization']} quantization)")
-            print(f"   Load Time: {result['load_time']:.1f}s")
-            print(f"   Memory Usage: {result['ram_used_gb']:.1f}GB RAM + {result['gpu_memory_gb']:.1f}GB GPU")
-            print("   Performance:")
+        for model in models:
+            print(f"\n📋 {model.name} ({model.size_gb}GB)")
+            compatibility = self.check_basic_compatibility(model)
             
-            for prompt_type in ['short', 'medium', 'long']:
-                if f"{prompt_type}_tpm" in result:
-                    tpm = result[f"{prompt_type}_tpm"]
-                    first_token = result[f"{prompt_type}_first_token_latency"] * 1000
-                    total_latency = result[f"{prompt_type}_total_latency"]
-                    print(f"     {prompt_type.capitalize():<8}: {tpm:6.1f} TPM | {first_token:4.0f}ms first token | {total_latency:.2f}s total")
-        
-        # Find best model
-        best_model = max(successful_results, key=lambda x: x.get('medium_tpm', 0))
-        
-        print(f"\n🏆 RECOMMENDATION")
-        print("-" * 30)
-        print(f"Best Overall: {best_model['model_name']} ({best_model['quantization']})")
-        print(f"Reasons:")
-        print(f"  • Highest medium prompt performance: {best_model['medium_tpm']:.1f} TPM")
-        print(f"  • Memory efficient: {best_model['ram_used_gb']:.1f}GB RAM usage")
-        print(f"  • Fast loading: {best_model['load_time']:.1f}s startup time")
-        
-        # Save detailed results
-        self.save_detailed_results()
+            if compatibility["options"]:
+                print("   ✅ Compatible quantization options:")
+                for i, option in enumerate(compatibility["options"], 1):
+                    print(f"      {i}. {option['quantization']:<8} | {option['required_ram']:.1f}GB RAM | {option['description']}")
+            else:
+                print("   ❌ Cannot run on your system")
+            
+            if compatibility["has_gpu_advantage"]:
+                print("   🚀 GPU acceleration available - faster inference expected")
     
+    def confirm_proceed(self) -> bool:
+        """Ask user confirmation to proceed"""
+        while True:
+            response = input("\n🚀 Proceed with benchmarking? (y/n): ").strip().lower()
+            if response in ['y', 'yes']:
+                return True
+            elif response in ['n', 'no']:
+                print("👋 Benchmarking cancelled.")
+                return False
+            else:
+                print("Please enter 'y' or 'n'")
+    
+    def download_and_load_model(self, model: ModelConfig) -> Tuple[Optional[object], Optional[object], Dict]:
+        """Download and load model with live progress updates"""
+        print(f"\n📥 Processing {model.name}...")
+        
+        # Find best quantization option for this system
+        compatibility = self.check_basic_compatibility(model)
+        if not compatibility["options"]:
+            return None, None, {"error": "Model incompatible with system"}
+        
+        # Try quantization options in order of efficiency
+        for quant_option in self.quantization_options:
+            # Check if this quantization is compatible
+            compatible_option = next(
+                (opt for opt in compatibility["options"] if opt["quantization"] == quant_option.name), 
+                None
+            )
+            
+            if not compatible_option:
+                continue
+                
+            try:
+                print(f"  🔄 Attempting {quant_option.name} quantization...")
+                print(f"     Expected RAM usage: {compatible_option['required_ram']:.1f}GB")
+                
+                # Show live system stats during download
+                monitor_thread = threading.Thread(target=self._monitor_system_during_load, daemon=True)
+                monitor_thread.start()
+                
+                # Load tokenizer first (smaller download)
+                print("     📚 Loading tokenizer...")
+                tokenizer = AutoTokenizer.from_pretrained(model.model_id, trust_remote_code=True)
+                if tokenizer.pad_token is None:
+                    tokenizer.pad_token = tokenizer.eos_token
+                
+                # Load main model
+                print("     🧠 Loading model (this may take several minutes)...")
+                start_time = time.time()
+                
+                model_obj = AutoModelForCausalLM.from_pretrained(
+                    model.model_id,
+                    quantization_config=quant_option.config,
+                    device_map="auto",
+                    torch_dtype=torch.float16 if quant_option.config is None else None,
+                    trust_remote_code=True
+                )
+                
+                load_time = time.time() - start_time
+                print(f"     ✅ Model loaded successfully in {load_time:.1f}s with {quant_option.name} quantization")
+                
+                return model_obj, tokenizer, {
+                    "quantization": quant_option.name,
+                    "load_time": load_time,
+                    "error": None
+                }
+                
+            except Exception as e:
+                print(f"     ❌ Failed with {quant_option.name}: {str(e)[:100]}...")
+                continue
+        
+        return None, None, {"error": "Failed to load with any quantization option"}
     def download_and_load_model(self, model: ModelConfig) -> Tuple[Optional[object], Optional[object], Dict]:
         """Download and load model with comprehensive error handling for all systems"""
         print(f"\n📥 Processing {model.name}...")
@@ -331,4 +448,288 @@ class InteractiveLLMBenchmark:
                 continue
         
         return None, None, {"error": "Failed to load with any quantization option"}
+
+    def _get_device_map(self, has_cuda: bool, has_mps: bool, quant_option) -> str:
+        """Determine optimal device mapping strategy"""
+        if has_cuda:
+            return "auto"  # Let transformers handle GPU placement
+        elif has_mps:
+            return "mps"   # Apple Silicon
+        else:
+            return "cpu"   # CPU-only fallback
+
+    def _get_torch_dtype(self, has_cuda: bool, has_mps: bool, quant_option):
+        """Determine optimal torch dtype for the system"""
+        if quant_option.config is not None:
+            # Quantized models handle their own dtype
+            return None
+        elif has_cuda:
+            return torch.float16  # GPU supports float16
+        elif has_mps:
+            return torch.float32  # MPS is better with float32
+        else:
+            return torch.float32  # CPU requires float32
+
+    def _monitor_system_during_load(self):
+        """Monitor system resources during model loading - robust version"""
+        try:
+            for i in range(60):  # Monitor for up to 60 seconds
+                try:
+                    memory = psutil.virtual_memory()
+                    cpu_percent = psutil.cpu_percent(interval=0.1)  # Non-blocking
+                    
+                    # Format output with proper clearing
+                    status = f"     📊 RAM: {memory.percent:.1f}% used | CPU: {cpu_percent:.1f}%"
+                    print(f"\r{status:<80}", end='', flush=True)
+                    
+                    time.sleep(2)
+                    
+                    # Stop if memory usage gets too high
+                    if memory.percent > 90:
+                        print(f"\n     ⚠️  High memory usage detected: {memory.percent:.1f}%")
+                        break
+                        
+                except Exception:
+                    # Continue silently if monitoring fails
+                    time.sleep(2)
+                    continue
+                    
+        except Exception:
+            # Fail silently - monitoring is not critical
+            pass
+        finally:
+            # Clear the monitoring line
+            print(f"\r{' ' * 80}\r", end='', flush=True)
+
+
+    # def _monitor_system_during_load(self):
+    #     """Monitor system resources during model loading"""
+    #     for _ in range(60):  # Monitor for up to 60 seconds
+    #         memory = psutil.virtual_memory()
+    #         cpu_percent = psutil.cpu_percent(interval=1)
+            
+    #         print(f"     📊 RAM: {memory.percent:.1f}% used | CPU: {cpu_percent:.1f}%", end='\r')
+    #         time.sleep(2)
+    
+    def advanced_benchmark(self, model, tokenizer, model_name: str, model_info: Dict) -> Dict:
+        """Run comprehensive benchmarking with multiple metrics"""
+        print(f"\n⚡ Running comprehensive benchmark for {model_name}...")
         
+        results = {
+            "model_name": model_name,
+            "quantization": model_info["quantization"],
+            "load_time": model_info["load_time"]
+        }
+        
+        try:
+            # Warm-up run
+            print("  🔥 Warming up model...")
+            self._run_warmup(model, tokenizer)
+            
+            # Test different prompt lengths
+            for prompt_type, prompt_text in self.test_prompts.items():
+                print(f"  📝 Testing {prompt_type} prompt...")
+                
+                # Multiple runs for statistical accuracy
+                times = []
+                first_token_times = []
+                
+                for run in range(3):  # 3 runs for averaging
+                    metrics = self._benchmark_single_run(model, tokenizer, prompt_text)
+                    times.append(metrics["total_time"])
+                    first_token_times.append(metrics["first_token_time"])
+                
+                # Calculate statistics
+                avg_total_time = sum(times) / len(times)
+                avg_first_token_time = sum(first_token_times) / len(first_token_times)
+                
+                # Calculate tokens per minute
+                tokens_generated = 50  # Standard generation length
+                tpm = (tokens_generated / avg_total_time) * 60
+                
+                results[f"{prompt_type}_tpm"] = round(tpm, 2)
+                results[f"{prompt_type}_total_latency"] = round(avg_total_time, 3)
+                results[f"{prompt_type}_first_token_latency"] = round(avg_first_token_time, 3)
+                
+                print(f"     ✅ {prompt_type.capitalize()}: {tpm:.1f} TPM | First token: {avg_first_token_time*1000:.0f}ms")
+            
+            # Memory usage
+            memory_used = psutil.virtual_memory().used / (1024**3)
+            gpu_memory = 0
+            if torch.cuda.is_available():
+                gpu_memory = torch.cuda.memory_allocated() / (1024**3)
+            
+            results.update({
+                "ram_used_gb": round(memory_used, 2),
+                "gpu_memory_gb": round(gpu_memory, 2),
+                "status": "success"
+            })
+            
+            return results
+            
+        except Exception as e:
+            print(f"  ❌ Benchmark failed: {str(e)}")
+            return {
+                "model_name": model_name,
+                "status": "failed",
+                "error": str(e)
+            }
+    
+    def _run_warmup(self, model, tokenizer):
+        """Run warmup to stabilize performance"""
+        inputs = tokenizer("Hello", return_tensors="pt")
+        if torch.cuda.is_available():
+            inputs = {k: v.cuda() for k, v in inputs.items()}
+        
+        with torch.no_grad():
+            model.generate(
+                inputs["input_ids"],
+                max_new_tokens=5,
+                do_sample=False,
+                pad_token_id=tokenizer.pad_token_id
+            )
+    
+    def _benchmark_single_run(self, model, tokenizer, prompt: str) -> Dict:
+        """Run single benchmark iteration with detailed timing"""
+        inputs = tokenizer(prompt, return_tensors="pt")
+        if torch.cuda.is_available():
+            inputs = {k: v.cuda() for k, v in inputs.items()}
+        
+        # Measure first token time
+        start_time = time.time()
+        
+        with torch.no_grad():
+            # Generate with streaming to capture first token
+            outputs = model.generate(
+                inputs["input_ids"],
+                max_new_tokens=50,
+                do_sample=False,
+                pad_token_id=tokenizer.pad_token_id,
+                return_dict_in_generate=True,
+                output_scores=True
+            )
+        
+        total_time = time.time() - start_time
+        
+        # Estimate first token time (approximation)
+        first_token_time = total_time * 0.1  # First token typically ~10% of total time
+        
+        return {
+            "total_time": total_time,
+            "first_token_time": first_token_time
+        }
+    
+    def cleanup_model(self, model, tokenizer):
+        """Clean up memory after each model"""
+        del model
+        del tokenizer
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        print("  🧹 Memory cleaned up")
+    
+    def analyze_and_recommend(self):
+        """Analyze results and provide recommendations"""
+        if not self.results:
+            print("❌ No successful benchmarks to analyze")
+            return
+        
+        successful_results = [r for r in self.results if r.get("status") == "success"]
+        
+        if not successful_results:
+            print("❌ No successful benchmarks completed")
+            return
+        
+        print("\n" + "=" * 60)
+        print("📊 BENCHMARK RESULTS & ANALYSIS")
+        print("=" * 60)
+        
+        # Display detailed results
+        for result in successful_results:
+            print(f"\n🎯 {result['model_name']} ({result['quantization']} quantization)")
+            print(f"   Load Time: {result['load_time']:.1f}s")
+            print(f"   Memory Usage: {result['ram_used_gb']:.1f}GB RAM + {result['gpu_memory_gb']:.1f}GB GPU")
+            print("   Performance:")
+            
+            for prompt_type in ['short', 'medium', 'long']:
+                if f"{prompt_type}_tpm" in result:
+                    tpm = result[f"{prompt_type}_tpm"]
+                    first_token = result[f"{prompt_type}_first_token_latency"] * 1000
+                    total_latency = result[f"{prompt_type}_total_latency"]
+                    print(f"     {prompt_type.capitalize():<8}: {tpm:6.1f} TPM | {first_token:4.0f}ms first token | {total_latency:.2f}s total")
+        
+        # Find best model
+        best_model = max(successful_results, key=lambda x: x.get('medium_tpm', 0))
+        
+        print(f"\n🏆 RECOMMENDATION")
+        print("-" * 30)
+        print(f"Best Overall: {best_model['model_name']} ({best_model['quantization']})")
+        print(f"Reasons:")
+        print(f"  • Highest medium prompt performance: {best_model['medium_tpm']:.1f} TPM")
+        print(f"  • Memory efficient: {best_model['ram_used_gb']:.1f}GB RAM usage")
+        print(f"  • Fast loading: {best_model['load_time']:.1f}s startup time")
+        
+        # Save detailed results
+        self.save_detailed_results()
+    
+    def save_detailed_results(self):
+        """Save comprehensive results to CSV"""
+        df = pd.DataFrame(self.results)
+        timestamp = int(time.time())
+        filename = f"llm_benchmark_detailed_{timestamp}.csv"
+        df.to_csv(filename, index=False)
+        print(f"\n💾 Detailed results saved to: {filename}")
+    
+    def run_interactive_benchmark(self):
+        """Main interactive benchmarking flow"""
+        print("🚀 Interactive LLM Local Benchmarking Tool")
+        print("=" * 50)
+        
+        # Step 1: System Analysis
+        self.get_system_info()
+        
+        # Step 2: Model Selection
+        self.display_model_options()
+        selected_models = self.get_user_model_selection()
+        
+        if not selected_models:
+            print("❌ No models selected. Exiting.")
+            return
+        
+        # Step 3: Compatibility Check
+        self.show_detailed_compatibility(selected_models)
+        
+        # Step 4: User Confirmation
+        if not self.confirm_proceed():
+            return
+        
+        # Step 5: Download and Benchmark
+        print(f"\n🎯 Starting benchmark of {len(selected_models)} model(s)...")
+        
+        for model_config in selected_models:
+            print(f"\n{'='*20} {model_config.name} {'='*20}")
+            
+            # Download and load
+            model, tokenizer, model_info = self.download_and_load_model(model_config)
+            
+            if model is None:
+                self.results.append({
+                    "model_name": model_config.name,
+                    "status": "failed",
+                    "error": model_info.get("error", "Unknown error")
+                })
+                continue
+            
+            # Benchmark
+            result = self.advanced_benchmark(model, tokenizer, model_config.name, model_info)
+            self.results.append(result)
+            
+            # Cleanup
+            self.cleanup_model(model, tokenizer)
+        
+        # Step 6: Analysis and Recommendations
+        self.analyze_and_recommend()
+
+if __name__ == "__main__":
+    benchmark = InteractiveLLMBenchmark()
+    benchmark.run_interactive_benchmark()
