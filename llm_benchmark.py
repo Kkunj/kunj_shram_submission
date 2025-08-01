@@ -960,7 +960,7 @@ class InteractiveLLMBenchmark:
             print("    CPU-only - focus on smaller, efficient models")
             print("    Consider adding GPU acceleration for significant speed improvements")
         
-        # Memory optimization advice
+       
         if any(r.get('ram_percent', 0) > 80 for r in results):
             print("      High RAM usage detected - consider:")
             print("      • More aggressive quantization")
@@ -968,7 +968,7 @@ class InteractiveLLMBenchmark:
 
     def save_detailed_results(self):
         """Save comprehensive results with hardware information"""
-        # Add hardware context to results
+       
         for result in self.results:
             result.update({
                 "hardware_type": self._get_hardware_type(),
@@ -1003,7 +1003,7 @@ class InteractiveLLMBenchmark:
 
 
 if __name__ == "__main__":
-    # Add startup message with system requirements
+    
     print(" Initializing LLM Benchmark Tool...")
     print("   Checking system compatibility...")
     
