@@ -5,6 +5,8 @@
 **Chosen Option: Option 1 (Local LLM setup)**  
 Kaggle link: https://www.kaggle.com/code/kunjkanzariya/shram-benchmark
 
+To see the output preview, when code executed on multi-GPU system, refer the above link.
+
 **Hoping for the best results 🤞**
 
 ## Description
