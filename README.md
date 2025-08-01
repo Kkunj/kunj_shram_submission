@@ -57,7 +57,7 @@ The benchmark tests the mentioned models (Gemma-2B, Qwen2.5-7B, Llama-3.1-8B) ac
 ## Usage
 
 ```bash
-python interactive_llm_benchmark.py
+python llm_benchmark.py
 ```
 
 Follow the interactive prompts to:
